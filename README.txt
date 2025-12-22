@@ -71,7 +71,7 @@ Game Rules:
 
 Author:
 
- - Yerzhan Abeyev
- - Computer Science Student
+ - Yerzhan Abeyev & Dauren Kubatov
+ - Computer Science Students
  - Columbia University
 
