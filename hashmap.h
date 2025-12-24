@@ -1,5 +1,5 @@
 #ifndef _HASHMAP_H_
-#define _HASMAP_H_
+#define _HASHMAP_H_
 typedef struct Node
 {
     char key;
