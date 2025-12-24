@@ -14,9 +14,13 @@ LDFLAGS =
 LDLIBS = 
 
 .PHONY: default
-default: testing
+default: http-server
 
-testing: testing.o hashmap.o html.o game.o
+http-server: http-server.o game.o http-request.o hashmap.o html.o
+
+http-server.o: http-server.c http-request.h game.h
+
+http-request.o: http-request.c http-request.h
 
 testing.o: testing.c game.h
 
@@ -28,9 +32,9 @@ html.o: html.c html.h game.h
 
 .PHONY: clean
 clean:
-	rm -f *.o *.a a.out core testing
+	rm -f *.o *.a a.out core http-server
 
 .PHONY: all
-all: clean testing
+all: clean http-server
 
 
