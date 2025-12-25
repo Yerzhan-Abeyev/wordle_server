@@ -88,7 +88,7 @@ int check(char *guess){
     char word[6];
     char color[6];
 
-    strcpy(word, guess);
+    strncpy(word, guess, sizeof(word)); word[5] = '\0';
     if(ifValidWord(word, allWords) == 0){
         return 0;
     }
