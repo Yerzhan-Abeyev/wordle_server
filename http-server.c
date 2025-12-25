@@ -203,14 +203,17 @@ int handleWordleRequest(struct Request* request, char* webRoot, int clientSock) 
     else if (strcmp(request->uri, wordleUri) == 0){
 
         // start game
-
+        cleanAll();
+        int rv = 1;
         start();
+        wordleTable = screen(rv);
+        
 
         //response to browser
 
         Send(clientSock, buf);
         Send(clientSock, "\r\n");
-        Send(clientSock, form); // just send request form
+        Send(clientSock, wordleTable); // just send request form
     }
     else {
         setStatusCode(request, 400);
