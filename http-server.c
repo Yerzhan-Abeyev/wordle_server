@@ -187,12 +187,9 @@ int handleWordleRequest(struct Request* request, char* webRoot, int clientSock) 
         //extract wordle word
 
         const char* key = request->uri + strlen(gameUriKey);
-        if (strlen(key) == 0) {
-            setStatusCode(request, 400);
-            handleError(request, clientSock);
-            return -1;
-        }
 
+        // request to game 
+        
         int rv = check(key);
         char* wordleTable;
         wordleTable = screen(rv); // need to add flag when game is finished
