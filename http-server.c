@@ -13,6 +13,7 @@
 #include <netdb.h>
 #include <ctype.h>  
 #include "http-request.h"
+#include "game.h"
 
 #define BUF_SIZE 4096
 #define LINE_SIZE 1000
@@ -165,11 +166,71 @@ int handleFileRequest(struct Request* request, char* webRoot, int clientSock){
 }
 
 
+int handleWordleRequest(struct Request* request, char* webRoot, int clientSock) {
+    const char *form =
+        "<html><body>\n"
+        "<h1>wordle</h1>\n"
+        "<p>\n"
+        "<form method=GET action=/wordle>\n"
+        "lookup: <input type=text name=key>\n"
+        "<input type=submit>\n"
+        "</form>\n"
+        "<p>\n"
+        ;
+    char buf[BUF_SIZE];
+    getStatusLine(request, buf);
+
+    char* gameUriKey = "/wordle?key=";
+    char* wordleUri = "/wordle";
+    if (strncmp(request->uri, gameUriKey, strlen(gameUriKey)) == 0) {
+
+        //extract wordle word
+
+        const char* key = request->uri + strlen(gameUriKey);
+        if (strlen(key) == 0) {
+            setStatusCode(request, 400);
+            handleError(request, clientSock);
+            return -1;
+        }
+
+        int rv = check(key);
+        char* wordleTable;
+        wordleTable = screen(rv); // need to add flag when game is finished
+        
+        //response to browser
+
+        Send(clientSock, buf);
+        Send(clientSock, "\r\n");
+        Send(clientSock, wordleTable);
+    }
+    else if (strcmp(request->uri, wordleUri) == 0){
+
+        // start game
+
+        start();
+
+        //response to browser
+
+        Send(clientSock, buf);
+        Send(clientSock, "\r\n");
+        Send(clientSock, form); // just send request form
+    }
+    else {
+        setStatusCode(request, 400);
+        handleError(request, clientSock);
+        return -1;
+    }
+
+    printLog(request);
+    return 0;
+}
+
+
 int main(int argc, char** argv) {
     if (argc != 3){
         fprintf(stderr, "usage: %s <server_port> <web_root>", argv[0]);
     }
-    unsigned short serverPort = atoi(argv[1]);
+    unsigned short serverPort = atoi(argv[1]); // atoi is not safe
     char* webRoot = argv[2];
 
     int serverSock = createServerSocket();
@@ -233,10 +294,14 @@ int main(int argc, char** argv) {
 
         // handle request 
 
-        char *gameURI_1 = "/wordle";
-        char *gameURI_2 = "/wordle?";
-        
-        handleFileRequest(request, webRoot, clientSock);
+        char *gameURI = "/wordle";
+
+        if (strncmp(request->uri, gameURI, strlen(gameURI)) == 0){
+            handleWordleRequest(request, webRoot, clientSock);
+        }
+        else {
+            handleFileRequest(request, webRoot, clientSock);
+        }
 
         close(clientSock);
     }
