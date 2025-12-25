@@ -29,10 +29,13 @@ void cleanAll(){
         fclose(solWords);
         solWords = NULL;
     }
+    count = 0;
+
 }
 
 // Initialization process
 int start(){
+   
     allWords = fopen("allWords.txt", "rb");
     solWords = fopen("solutionWords.txt", "rb");
 
@@ -46,6 +49,15 @@ int start(){
         cleanAll();
         return 0;}
     memset(&board, 0, sizeof(board));
+
+    for(int row = 0; row<6; row++){
+
+    for(int i = 0; i < 5; i++){
+        board.letters[row][i] = NULL;
+        board.colors[row][i] = NULL;
+
+    }
+    }
     count = 0;    
     target = chooseTarget(solWords);
     if(target == NULL){
@@ -80,28 +92,33 @@ char* chooseTarget(FILE* fp){
 
 // Return HTML code
 char *screen(int a){
-    return convert(&board, a);
+    return convert(&board, a, target);
 }
 
 // Check if word is valid and check its status
 int check(char *guess){
-    char word[6];
+    char word[100];
     char color[6];
 
-    strncpy(word, guess, sizeof(word)); word[5] = '\0';
+    strcpy(word, guess);
     toLower(word);
     if(ifValidWord(word, allWords) == 0){
         return 0;
     }
-
     wordCheck(color, word, target);
+
+
     for(int i = 0; i < 5; i++){
         board.letters[count][i] = word[i];
         board.colors[count][i] = color[i];
 
     }
     count++;
-    if(count == 6){
+    if(strcmp(color,"ggggg") == 0){
+        return 3;        
+    }
+    else if(count == 6){
+
         return 2;
     }
     return 1;
