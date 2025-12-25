@@ -89,10 +89,11 @@ int check(char *guess){
     char color[6];
 
     strncpy(word, guess, sizeof(word)); word[5] = '\0';
+    toLower(word);
     if(ifValidWord(word, allWords) == 0){
         return 0;
     }
-    toLower(word);
+
     wordCheck(color, word, target);
     for(int i = 0; i < 5; i++){
         board.letters[count][i] = word[i];
