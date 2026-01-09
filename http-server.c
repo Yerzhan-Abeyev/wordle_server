@@ -13,16 +13,14 @@
 #include <netdb.h>
 #include <ctype.h>  
 #include "http-request.h"
+#include "dataStructures.h"
+#include "utility.h"
 #include "game.h"
 
 #define BUF_SIZE 4096
 #define LINE_SIZE 1000
+#define STREAM_SIZE 1024 // safety concern !!!
 #define PROTOCOL "HTTP/1.0"
-
-static void terminate(const char* msg) {
-    perror(msg);
-    exit(1);
-}
 
 static int createServerSocket() {
 
@@ -54,21 +52,6 @@ static void setSocketAddress(struct sockaddr_in *serverAddr,
         serverAddr->sin_addr.s_addr = htonl(INADDR_ANY);  // use all IP addresses of the machine
     else 
         serverAddr->sin_addr.s_addr = htonl(serverIP);    // ip address
-}
-
-static void Bind(int serverSock, const struct sockaddr_in *serverAddr) {
-    socklen_t serverLen = sizeof(*serverAddr);
-    int rv = bind(serverSock, (struct sockaddr *)serverAddr, serverLen);
-    if (rv < 0) {
-        terminate("bind failed");
-    }
-}
-
-static void Listen(int serverSock) {
-    int rv = listen(serverSock, SOMAXCONN); // SOMAXCONN is 4096 on Linux
-    if (rv < 0) {
-        terminate("listen failed");
-    }
 }
 
 ssize_t Send(int sock, const char *buf) { // ssize_t is [-1, SSIZE_MAX]
@@ -112,9 +95,26 @@ void handleError(struct Request* request, int clientSock) {
             "</body></html>\n",
             request->statusCode, getReasonPhrase(request->statusCode)
     );
+    Send(clientSock, buf);
 
     // printLog(request);
     close(clientSock);
+}
+
+void handleHeaders(struct Request* request, struct circularBuffer* buff, int clientSock) {
+    char line[LINE_SIZE];
+    char* endOfLine = "\r\n";
+
+    fprintf(stderr, "%s", "I am here! - handleHeaders");
+    
+    // strong assumption that buffer already contains all data
+    while (!isEmpty_Buffer(buff) && getLine_Buffer(line, sizeof(line), buff, endOfLine, strlen(endOfLine)) != NULL) {
+        fprintf(stderr, "%s", line);
+        if (strcmp(line, endOfLine) == 0)
+            return;
+    }
+
+    setStatusCode(request, 400); // Bad request
 }
 
 int handleFileRequest(struct Request* request, char* webRoot, int clientSock){
@@ -177,8 +177,10 @@ int handleWordleRequest(struct Request* request, char* webRoot, int clientSock) 
         "</form>\n"
         "<p>\n"
         ;
-    char buf[BUF_SIZE];
-    getStatusLine(request, buf);
+
+    struct circularBuffer* buffS2C = init_Buffer();
+    char line[LINE_SIZE];
+    getStatusLine(request, line);
 
     char* gameUriKey = "/wordle?key=";
     char* wordleUri = "/wordle";
@@ -196,24 +198,35 @@ int handleWordleRequest(struct Request* request, char* webRoot, int clientSock) 
         
         //response to browser
 
-        Send(clientSock, buf);
-        Send(clientSock, "\r\n");
-        Send(clientSock, wordleTable);
+        if (copyStrings_Buffer(buffS2C, line, "\r\n", wordleTable, NULL) != 3){
+            fprintf(stderr, "%s", "copyStrings_Buffer failed");
+            exit(1);
+        }
+
+        size_t size = getSize_Buffer(buffS2C);
+        if (writen_Buffer(clientSock, buffS2C, size) != size){
+            fprintf(stderr, "%s", "writen_Buffer failed");
+            exit(1);
+        }
     }
     else if (strcmp(request->uri, wordleUri) == 0){
 
         // start game
-        cleanAll();
-        int rv = 1;
+
         start();
-        wordleTable = screen(rv);
-        
 
         //response to browser
 
-        Send(clientSock, buf);
-        Send(clientSock, "\r\n");
-        Send(clientSock, wordleTable); // just send request form
+        if (copyStrings_Buffer(buffS2C, line, "\r\n", form, NULL) != 3){
+            fprintf(stderr, "%s", "copyStrings_Buffer failed");
+            exit(1);
+        }
+
+        size_t size = getSize_Buffer(buffS2C);
+        if (writen_Buffer(clientSock, buffS2C, size) != size){
+            fprintf(stderr, "%s", "writen_Buffer failed");
+            exit(1);
+        }
     }
     else {
         setStatusCode(request, 400);
@@ -236,32 +249,35 @@ int main(int argc, char** argv) {
     int serverSock = createServerSocket();
     struct sockaddr_in serverAddr = {};
     setSocketAddress(&serverAddr, serverPort, 0);
-    Bind(serverSock, &serverAddr);
-    Listen(serverSock);
+    socklen_t addrLen = sizeof(serverAddr);
+    Bind(serverSock, (struct sockaddr*) &serverAddr, addrLen);
+    Listen(serverSock, SOMAXCONN);
 
-    // accept incoming connections
-    char line[LINE_SIZE];
+    // buffer, flow from Client to Server
+    struct circularBuffer* buffC2S = init_Buffer();
     
+    // accept incoming connections
+
     while(1) {
+
+        if (!isEmpty_Buffer(buffC2S)) {
+            flush_Buffer(stdout, buffC2S);
+        }
+
         struct sockaddr_in clientAddr = {};
         socklen_t clientLen = sizeof(clientAddr);
-        int clientSock = accept(serverSock, (struct sockaddr *)&clientAddr, &clientLen);
-        if (clientSock < 0) {
-            terminate("accept failed"); // server error
-        }
-
-        /* file wrapper */
-        FILE* input = fdopen(clientSock, "rb");
-        if (input < 0) {
-            terminate("fdopen failed"); // server error
-        }
+        int clientSock = Accept(serverSock, (struct sockaddr *) &clientAddr, &clientLen);
 
         // get request line
 
-        if (fgets(line, sizeof(line), input) == NULL) {
-            if (ferror(input)){
-                terminate("fdopen failed"); // server error
-            }
+        if (read_Buffer(clientSock, buffC2S, STREAM_SIZE) < 0) {
+            exit(1);
+        }
+
+        char line[LINE_SIZE];
+        char* end = "\r\n";
+        if (getLine_Buffer(line, sizeof(line), buffC2S, end, strlen(end)) == NULL) {
+            exit(1);
         }
 
         char* clientIP = inet_ntoa(clientAddr.sin_addr); // get client ip address
@@ -271,26 +287,13 @@ int main(int argc, char** argv) {
             continue; 
         }
 
-        // skip header files
+        // handle header files
 
-        while(1) {
-            if (fgets(line, sizeof(line), input) == NULL) {
-                if (ferror(input)){
-                    terminate("fdopen failed"); // server error
-                }
-                else{
-                    setStatusCode(request, 400); // Bad Request
-                    break;
-                }
-            }
-            if (strcmp(line, "\r\n") || strcmp(line, "\n"))
-                break;
-        }
+        handleHeaders(request, buffC2S, clientSock);
         if (!isSuccess(request)) {
             handleError(request, clientSock); // client error
             continue; 
         }
-
 
         // handle request 
 
@@ -303,8 +306,12 @@ int main(int argc, char** argv) {
             handleFileRequest(request, webRoot, clientSock);
         }
 
-        close(clientSock);
+        if (isSuccess(request)) {
+            close(clientSock);
+        }
     }
 
   return 0;
 }
+
+
