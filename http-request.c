@@ -6,7 +6,7 @@
 
 char* getReasonPhrase(int statusCode){
     const char* reasonPhrase = NULL;
-    if ((reasonPhrase = searchByKey(&HTTP_StatusCodes, statusCode)) != NULL)
+    if ((reasonPhrase = searchByKey_Table(&HTTP_StatusCodes, statusCode)) != NULL)
         return reasonPhrase;
     else
         return "Unknown Status Code";
