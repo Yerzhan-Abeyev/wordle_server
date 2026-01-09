@@ -4,29 +4,31 @@ CC = gcc
 # Compilation options:
 # -g: include debugging info symbols
 # -Wall: enable all warnings
-CFLAGS = -g -Wall 
+CFLAGS = -g -Wall
 
 # Linking options:
-LDFLAGS = 
+LDFLAGS =
 
 # List the libraries you need to link with in LDLIBS.
 # For example, use -lm for the math library.
-LDLIBS = 
+LDLIBS =
 
 .PHONY: default
 default: http-server
 
-http-server: http-server.o game.o http-request.o hashmap.o html.o
+http-server: http-server.o game.o http-request.o hashmap.o html.o dataStructures.o utility.o
 
-http-server.o: http-server.c http-request.h game.h
+http-server.o: http-server.c http-request.h game.h dataStructures.h utility.h
 
 http-request.o: http-request.c http-request.h
 
-testing.o: testing.c game.h
+dataStructures.o: dataStructures.c dataStructures.h
 
 hashmap.o: hashmap.c hashmap.h
 
 game.o: game.c hashmap.h html.h game.h
+
+utility.o: utility.h utility.c
 
 html.o: html.c html.h game.h
 
@@ -36,5 +38,3 @@ clean:
 
 .PHONY: all
 all: clean http-server
-
-
