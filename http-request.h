@@ -2,7 +2,10 @@
 #define HTTP_REQUEST_H
 
 #include <stdlib.h>
+
 #include "dataStructures.h"
+#include "network.h"
+#include "utility.h"
 
 struct Request {
     char* method;
@@ -53,5 +56,7 @@ static struct Table HTTP_StatusCodes = {
 };
 
 char* getReasonPhrase(int);
+
+status_t handle_Request(struct Connection* c);
 
 #endif

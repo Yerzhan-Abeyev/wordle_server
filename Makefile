@@ -14,21 +14,23 @@ LDFLAGS =
 LDLIBS =
 
 .PHONY: default
-default: http-server
+default: server
 
-http-server: http-server.o game.o http-request.o hashmap.o html.o dataStructures.o utility.o
+server: server.o http-request.o network.o dataStructures.o hashmap.o  game.o  utility.o html.o
 
-http-server.o: http-server.c http-request.h game.h dataStructures.h utility.h
+server.o: server.c dataStructures.h http-request.h network.h utility.h
 
-http-request.o: http-request.c http-request.h
+http-request.o: http-request.c http-request.h network.h dataStructures.h game.h utility.h
 
-dataStructures.o: dataStructures.c dataStructures.h
+network.o: network.c network.h dataStructures.h http-request.h utility.h
+
+dataStructures.o: dataStructures.c dataStructures.h utility.h
 
 hashmap.o: hashmap.c hashmap.h
 
 game.o: game.c hashmap.h html.h game.h
 
-utility.o: utility.h utility.c
+utility.o: utility.c utility.h
 
 html.o: html.c html.h game.h
 

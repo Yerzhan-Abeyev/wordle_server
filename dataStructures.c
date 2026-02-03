@@ -3,12 +3,27 @@
 #include <stdio.h>
 #include <string.h>
 #include <stdarg.h>
+#include <sys/uio.h>
 #include <errno.h>
 #include <assert.h>
+#include "utility.h"
 #include "dataStructures.h"
 
-#define BUF_SIZE 4096 // safety concern !!!
+#define BUF_SIZE 32
 #define MAX_BUF_SIZE 4096
+
+static inline size_t minOf2(const size_t x, const size_t y){
+    return x < y ? x : y;
+}
+
+static inline size_t minOf3(const size_t x, const size_t y, const size_t z) {
+    return minOf2(minOf2(x, y), z);
+}
+
+static inline size_t optimMod (size_t n, size_t x) { // n % x, x is power of 2
+    assert((x & (x - 1)) == 0);
+    return n & (x - 1);
+}
 
 const char *searchByKey_Table(struct Table* table, int key)
 {
@@ -20,6 +35,13 @@ const char *searchByKey_Table(struct Table* table, int key)
     return NULL;
 }
 
+/*
+ * Implementation of a FIFO queue using array. 
+ * tail -> consumer extract an element
+ * head -> producer insert an element
+ * To optimize # of sys calls, use read & write functions insert that inser & extract n nytes instead of 1
+*/
+
 struct circularBuffer {
     char* array;
     size_t head;
@@ -29,10 +51,10 @@ struct circularBuffer {
 };
 
 struct circularBuffer* init_Buffer () {
-    struct circularBuffer* buffer = (struct circularBuffer*) malloc(sizeof(struct circularBuffer));
+    struct circularBuffer* buffer = (struct circularBuffer*)malloc(sizeof(struct circularBuffer));
     buffer->array = (char*)malloc(sizeof(char) * BUF_SIZE);
     if (buffer->array == NULL) {
-        perror("malloc failed");
+        perror("init_Buffer: malloc failed");
         return NULL;
     }
 
@@ -43,55 +65,43 @@ struct circularBuffer* init_Buffer () {
     return  buffer;
 }
 
-static inline size_t minOf2(const size_t x, const size_t y){
-    return x < y ? x : y;
-}
-
-static inline size_t optimMod (size_t n, size_t x) { // n % x, x is power of 2
-    assert((x & (x - 1)) == 0);
-    return n & (x - 1);
+void free_Buffer(struct circularBuffer* buffer) {
+    assert(buffer != NULL);
+    if (buffer->array != NULL) free(buffer->array); 
+    free(buffer);
 }
 
 static inline size_t distance_head (size_t d, struct circularBuffer* buffer) { // max sector of contig memory for write, capped by d
-    if (d == 0) {
-        return 0;
-    }
-    if (buffer->size == buffer->cap) {
-        return 0;
-    }
-
-    if (buffer->tail > buffer->head)
-        return minOf2(d, buffer->tail - buffer->head);
-
-    return minOf2(d, buffer->cap - buffer->head);    
+    return minOf3(d, buffer->cap - buffer->head, buffer->cap - buffer->size);
 }
 
-static inline size_t distance_tail (int d, struct circularBuffer* buffer) { // max sector of contig memory for read
-    if (d == 0) {
-        return 0;
-    }
-    if (buffer->size == 0) {
-        return 0;
-    }
-
-    if (buffer->head > buffer->tail)
-        return minOf2(d, buffer->head - buffer->tail);
-
-    return minOf2(d, buffer->cap - buffer->tail);
+static inline size_t distance_tail (size_t d, struct circularBuffer* buffer) { // max sector of contig memory for read, capped by d
+    return minOf3(d, buffer->cap - buffer->tail, buffer->size);
 }
 
+static inline uint8_t at_Buffer(const size_t shift, const struct circularBuffer* buffer) {
+    assert(shift < buffer->size);
+    size_t curr = optimMod((shift + buffer->tail), buffer->cap);
+    return (uint8_t)buffer->array[curr];
+}
+
+/*
+ * reallocate new memmory for buffer, 
+ * return 0 on success, return -1 on error
+*/
 static int rsetCapacity(struct circularBuffer* buffer, size_t newCap) {
-
     char* newArray = (char*)malloc(sizeof(char) * newCap);
     if (newArray == NULL) {
         perror("rsetCapacity: malloc failed");
         return -1;
     }
+    if (buffer->size >= newCap) {
+        msg("rsetCapacity: newCap is less than buffer size");
+        return -1;
+    }
 
     size_t first = buffer->cap - buffer->tail;
-    if (first > buffer->size) {
-        first = buffer->size;
-    }
+    if (first > buffer->size) first = buffer->size;
 
     memcpy(newArray, buffer->array + buffer->tail, first);
     memcpy(newArray + first, buffer->array, buffer->size - first);
@@ -104,37 +114,34 @@ static int rsetCapacity(struct circularBuffer* buffer, size_t newCap) {
     return 0;
 }
 
-int reserve(struct circularBuffer* buffer, size_t add) {
+/*
+ * increase buffer memory by add bytes, 
+ * return 0 on success, return -1 on error
+*/
+static int reserve(struct circularBuffer* buffer, const size_t add) {
     size_t need = buffer->size + add;
-    if (need < buffer->cap) {
-        return 0;
-    } 
-    size_t newCap = buffer->cap ? buffer->cap : BUF_SIZE;
+    if (need < buffer->cap) return 0;
+
+    size_t newCap = buffer->cap ? buffer->cap : BUF_SIZE; // in case, if buffer->cap = 0
+    assert(!(buffer->cap & (buffer->cap - 1))); // ensure buffer->cap is a power of 2
     while (newCap < buffer->size + add) {
-        newCap *= 2;
-        if (newCap > MAX_BUF_SIZE) {
-            fprintf(stderr, "%s\n", 
-                "reserve: couldn't allocate more than MAX_BUF_SIZE");
+        if (newCap > MAX_BUF_SIZE / 2) {
+            msg("reserve: couldn't allocate more than MAX_BUF_SIZE");
             return -1;
         }
+        newCap *= 2;
     }
     return rsetCapacity(buffer, newCap);
 }
 
-int isEmpty_Buffer(struct circularBuffer* buffer) {
-    return (buffer->size == 0) ? 1 : 0;
-}
+/* 
+ * decrease buffer memory, if there is only a small part of used memory, 
+ * return 0 on success, return -1 on error
+*/
+static int shrink (struct circularBuffer* buffer) {
+    if (buffer->size == 0) return rsetCapacity(buffer, BUF_SIZE);
 
-size_t getSize_Buffer(struct circularBuffer* buffer) {
-    return buffer->size;
-}
-
-int shrink (struct circularBuffer* buffer) {
-    if (buffer->size == 0) {
-        return rsetCapacity(buffer, BUF_SIZE);
-    }
-
-    if (buffer->size <= buffer->cap / 4) {
+    if (buffer->size <= buffer->cap / 8) {
         size_t newCap = buffer->cap / 2;
         if (newCap < BUF_SIZE) {
             newCap = BUF_SIZE;
@@ -142,26 +149,30 @@ int shrink (struct circularBuffer* buffer) {
         assert(newCap > buffer->size);
         return rsetCapacity(buffer, newCap);
     }
-
     return 0;
 }
 
-char at_Buffer(size_t shift, struct circularBuffer* buffer) {
-    assert(shift < buffer->size);
-    size_t curr = optimMod((shift + buffer->tail), buffer->cap);
-    return buffer->array[curr];
+int isEmpty_Buffer(const struct circularBuffer* buffer) {
+    assert(buffer != NULL);
+    return (buffer->size == 0) ? 1 : 0;
 }
 
-// copy n bytes from the source to buffer
-ssize_t copy_Buffer(struct circularBuffer* buffer, const void* src_, size_t n) {
-    if (n == 0) {
-        return 0;
-    }
+size_t getSize_Buffer(const struct circularBuffer* buffer) {
+    assert(buffer != NULL);
+    return buffer->size;
+}
 
-    size_t copy = n;
 
-    if (n > buffer->cap - buffer->size) {
-        if (reserve(buffer, n) < 0) {
+/* 
+ * copy n bytes from a contiguous memory struct to buffer
+*/
+ssize_t copy_Buffer(struct circularBuffer* buffer, const void* src_, const size_t n) {
+    assert(buffer && src_);
+    if (n == 0) return 0;
+
+    size_t nleft = n;
+    if (nleft > buffer->cap - buffer->size) {
+        if (reserve(buffer, nleft) < 0) {
             return -1;
         }
     }
@@ -169,41 +180,43 @@ ssize_t copy_Buffer(struct circularBuffer* buffer, const void* src_, size_t n) {
     const char* src = (const char*) src_;
 
     // first chunk
-    size_t first = distance_head(n, buffer);
+    size_t first = distance_head(nleft, buffer);
     memcpy(buffer->array + buffer->head, src, first);
     buffer->head = optimMod(buffer->head + first, buffer->cap);
     buffer->size += first;
-    n -= first;
+    nleft -= first;
 
     // second chunk
-    if (n > 0) {
+    if (nleft > 0) {
         assert(buffer->head == 0);
-        size_t second = distance_head(n, buffer);
-        memcpy(buffer->array + buffer->head, src + first, second);
+        size_t second = distance_head(nleft, buffer);
+        memcpy(buffer->array, src + first, second);
         buffer->head = optimMod(buffer->head + second, buffer->cap);
         buffer->size += second;
-        n -= second;
+        nleft -= second;
     }
 
-    if (n != 0) {
+    if (nleft != 0) {
         fprintf(stderr, "%s %zu instead of %zu\n", 
-                "copy_Buffer: copied", copy-n, copy);
+                "copy_Buffer: copied", n - nleft, n);
         return -1;
     }
-    return copy;
+    return n;
 }
 
-// copy the array of strings to buffer, return number of strings copied, variadic function
-size_t copyStrings_Buffer(struct circularBuffer * buffer, const char* first, ...) {
+/*
+ * variadic function
+ * copy C-strings to buffer
+*/
+size_t copyStrings_Buffer(struct circularBuffer* buffer, const char* first, ...) {
+    assert(buffer);
     va_list args;
     int i = 0;
 
     va_start(args, first);
     const char* currString = first;
     while(currString != NULL) {
-        if (copy_Buffer(buffer, currString, strlen(currString)) < 0) {
-            break;
-        }
+        if (copy_Buffer(buffer, currString, strlen(currString)) < 0) break;
         currString = va_arg(args, const char*);
         i++;
     }
@@ -212,150 +225,152 @@ size_t copyStrings_Buffer(struct circularBuffer * buffer, const char* first, ...
     return i;
 }
 
-// try to read up n bytes from file descriptor to buffer
-ssize_t read_Buffer(int fd, struct circularBuffer* buffer, size_t n) {
-
-    if (buffer->size == buffer->cap) {
-        fprintf(stderr, "%s\n", "read_Buffer: buffer is full");
-        return -1;
-    }
-
-    if (n > buffer->cap - buffer->size) 
-        n = buffer->cap - buffer->size;
-
-    ssize_t nread;
-
-    while (1) {
-        nread = read(fd, buffer->array + buffer->head, distance_head(n, buffer)); // limitation is here
-        if (nread < 0) {
-            if (errno == EINTR) {
-                continue;
-            }
-            perror("read_Buffer: read is failed");
+/*
+ * copy n bytes from another buffer to buffer
+*/
+ssize_t copyBuffer_Buffer(struct circularBuffer* dest, struct circularBuffer* src, const size_t n) {
+    if (n > dest->cap - dest->size) {
+        if (reserve(dest, n) < 0) {
             return -1;
         }
-        else if (nread == 0){
-            return 0;
+    }
+
+    size_t count = 0;
+    while(!isEmpty_Buffer(src)) {
+        dest->array[dest->head] = src->array[src->tail];
+        dest->head = optimMod(dest->head + 1, dest->cap);
+        dest->size += 1;
+        src->tail = optimMod(src->tail + 1, src->cap);
+        src->size -= 1;
+        count++;
+    }
+
+    return count;
+}
+
+status_t read_Buffer(int fd, struct circularBuffer* buffer, size_t* n, int* error) {
+    assert(n && error && buffer);
+    msg("read_Buffer");
+
+    *error = 0;
+    size_t nleft = *n;
+    if (nleft == 0) return STATUS_OK;
+
+    if (nleft > buffer->cap - buffer->size) {
+        if (reserve(buffer, nleft) < 0) {
+            msg("read_Buffer: reserve failed");
+            return STATUS_ERROR;
         }
-        else {
-            size_t rv = (size_t) nread;
-            buffer->head = optimMod(buffer->head + rv, buffer->cap);
-            buffer->size += rv;
-            assert(buffer->size <= buffer->cap);
-            return nread;
-        }
+    }
+
+    struct iovec iov[2]; int count = 0;
+    iov[0].iov_base = buffer->array + buffer->head;
+    iov[0].iov_len = distance_head(nleft, buffer);
+    count++;
+
+    nleft -= iov[0].iov_len;
+
+    if (nleft > 0) {
+        iov[1].iov_base = buffer->array;
+        iov[1].iov_len = nleft;
+        count++;
+    }
+
+    ssize_t rv = readv(fd, iov, count);
+    if (rv > 0) {
+        size_t r = (size_t)rv;
+        // fprintf(stderr, "recv %d", r);
+        buffer->head = optimMod(r + buffer->head, buffer->cap);
+        buffer->size += r;
+        *n = r;
+        return STATUS_OK;
+    }
+    else if (rv == 0) {
+        return STATUS_CLOSE;
+    }
+    else {
+        int e = errno;
+        *error = e;
+        perror("read_Buffer: read failed");
+        return STATUS_ERROR;
     }
 }
 
-// try to read up as much as possible until you’ve read min(n, space) bytes, or EOF, or error
-ssize_t readn_Buffer (int fd, struct circularBuffer* buffer, size_t n) {
+status_t write_Buffer(int fd, struct circularBuffer* buffer, size_t* n, int* error) {
+    assert(n && error && buffer);
+    msg("write_Buffer");
 
-    if (buffer->size == buffer->cap) {
-        fprintf(stderr, "%s\n", "readn_Buffer: buffer is full");
+    *error = 0;
+    size_t nleft = *n;
+    if (nleft == 0) return STATUS_OK;
+
+    if (isEmpty_Buffer(buffer)) {
+        msg("write_Buffer: buffer is empty");
+        return STATUS_ERROR;
+    }
+    nleft = minOf2(nleft, buffer->size);
+
+    struct iovec iov[2]; int count = 0;
+    iov[0].iov_base = buffer->array + buffer->tail;
+    iov[0].iov_len = distance_tail(nleft, buffer);
+    count++;
+
+    nleft -= iov[0].iov_len;
+
+    if (nleft > 0) {
+        iov[1].iov_base = buffer->array;
+        iov[1].iov_len = nleft;
+        count++;
+    }
+
+    ssize_t rv = writev(fd, iov, count);
+    if (rv > 0) {
+        size_t r = (size_t)rv;
+        fprintf(stderr, "send %d", r);
+        buffer->tail = optimMod(r + buffer->tail, buffer->cap);
+        buffer->size -= r;
+        *n = r;
+        return STATUS_OK;
+    }
+    else if (rv == 0) {
+        return STATUS_OK;
+    }
+    else {
+        int e = errno;
+        *error = e;
+        perror("write_Buffer: write failed");
+        return STATUS_ERROR;
+    }
+}
+
+int flush_Buffer(FILE* fp, struct circularBuffer* buffer){
+    assert(fp && buffer);
+    if (isEmpty_Buffer(buffer)) return 0;
+
+    size_t first = minOf2(buffer->cap - buffer->tail, buffer->size);
+    if (first != fwrite(buffer->array + buffer->tail, sizeof(char), first, fp)) {
+        perror("fwrite failed");
         return -1;
     }
 
-    size_t nleft;
-    if (n > buffer->cap - buffer->size) 
-        nleft = buffer->cap - buffer->size;
-    else
-        nleft = n;
-
-    size_t totalRead = 0;
-    ssize_t nread;
-
-    while (nleft > 0) {
-        if ((nread = read(fd, buffer->array + buffer->head, distance_head(nleft, buffer))) < 0) {
-            if (errno == EINTR) {
-                continue;
-            }
-            else {
-                perror("readn_Buffer: read failed");
-                return -1;
-            }
+    size_t second = buffer->size - first;
+    if (second > 0) {
+        if (second != fwrite(buffer->array, sizeof(char), second, fp)) {
+            perror("fwrite failed");
+            return -1;
         }
-        else if (nread == 0) {
-            break; // EOF
-        }
-
-        size_t rv = (size_t) nread;
-        nleft -= rv;
-        totalRead += rv;
-        // buffer->readInd = (buffer->readInd + nread) % buffer->cap;
-        buffer->head = optimMod(buffer->head + rv, buffer->cap);
     }
 
-    buffer->size = buffer->size + totalRead;
-    return totalRead;
+    buffer->tail = buffer->head; buffer->size = 0;
+    return 0;
 }
 
-// try to write up n bytes from buffet to file descriptor
-ssize_t writen_Buffer (int fd, struct circularBuffer* buffer, size_t n) {
-
-    if (buffer->size == 0) {
-        fprintf(stderr, "%s\n", "write_Buffer: buffer is empty");
-        return -1;
-    }
-
-    size_t nleft;
-    if (n > buffer->size) 
-        nleft = buffer->size;
-    else
-        nleft = n;
-
-    size_t totalWrite = 0;
-    ssize_t nwrite;
-
-    while (nleft > 0) {
-        if ((nwrite = write(fd, buffer->array + buffer->tail, distance_tail(nleft, buffer))) <= 0) {
-            if (nwrite < 0 && errno == EINTR) 
-                nwrite = 0;
-            else
-                perror("write_Buffer: write failed");
-                return -1;
-        }
-
-        size_t rv = (size_t) nwrite;
-        nleft -= rv;
-        totalWrite += rv;
-        // buffer->writeInd = (buffer->writeInd + nwrite) % buffer->cap;
-        buffer->tail = optimMod(buffer->tail + rv, buffer->cap);
-    }
-
-    buffer->size -= totalWrite;
-    return totalWrite;
-}
-
-// transmit all remaining bytes to file pointer
-void flush_Buffer(FILE* fp, struct circularBuffer* buffer){
-    if (buffer->size == 0)
-        return;
-    if (fp == NULL) {
-        fprintf(stderr, "%s\n", "flush_Buffer: file pointer is null");
-    }
-
-    // first chunk
-    size_t shift = distance_tail(buffer->size, buffer);
-    fwrite(buffer->array + buffer->tail, sizeof(char), shift, fp);
-
-    buffer->tail = optimMod(buffer->tail + shift, buffer->cap);
-    buffer->size -= shift;
-
-     // second chunk
-    if (buffer->size > 0) {
-        assert(buffer->tail == 0);
-        shift = distance_tail(buffer->size, buffer);
-        fwrite(buffer->array + buffer->tail, sizeof(char), shift, fp);
-        buffer->tail = optimMod(buffer->tail + shift, buffer->cap);
-        buffer->size -= shift;
-    }
-
-    assert(buffer->size == 0);
-    assert(buffer->tail == buffer->head);
-}
-
-/// precompute the values of prefix function for the given string
-int* prefixFunction(const char* str, size_t len) {
+/* 
+ * KMP algorithm
+ * precompute the values of prefix function for the given string
+ * return pointer to prefix array on success, return NULL on error
+*/
+static int* prefixFunction(const char* str, size_t len) {
     int* pi = malloc(sizeof(int) * (len));
     if (pi == NULL) {
         perror("malloc fail");
@@ -384,7 +399,6 @@ int* prefixFunction(const char* str, size_t len) {
     return pi;
 }
 
-// find the first occurence of a sequence in buffer, otherwise return -1
 ssize_t findSeq_Buffer(char* str, size_t len, struct circularBuffer* buffer) {
     if (len == 0) {
         return 0;
@@ -419,7 +433,6 @@ ssize_t findSeq_Buffer(char* str, size_t len, struct circularBuffer* buffer) {
     return -1;
 }
 
-// guarantee to return NULL or C-string
 char* getLine_Buffer(char* line, size_t n, struct circularBuffer* buffer, char* delim, size_t dlen) {
     if (n == 0) {
         fprintf(stderr, "%s\n", "getLine_Buffer: size of line is 0");
@@ -457,3 +470,106 @@ char* getLine_Buffer(char* line, size_t n, struct circularBuffer* buffer, char* 
 
     return line;
 }
+
+
+/*
+ * Dynamic Array
+ * Safety concern: get_Array return a pointer to a value, not the value itself
+ * Don't keep the pointer, it may become dangling after realloc(), dereference the pointer and keep the value
+*/
+
+ struct dynamicArray {
+    void* array;
+    size_t size; // # of elements 
+    size_t elementSize; 
+    size_t capacity; // # of allocated elements
+ };
+
+struct dynamicArray* init_Array(size_t cap, size_t elementSize) {
+    assert(cap != 0 && elementSize != 0);
+
+    struct dynamicArray* dArray = malloc(sizeof(struct dynamicArray));
+    if (dArray == NULL) {
+        perror("init_Array: malloc failed");
+        return NULL;
+    }
+    dArray->array = malloc(cap * elementSize);
+    if (dArray->array == NULL) {
+        free(dArray);
+        perror("init_Array: malloc failed");
+        return NULL;
+    }
+    dArray->capacity = cap;
+    dArray->elementSize = elementSize;
+    dArray->size = 0;
+    return dArray;
+ }
+
+ void free_Array(struct dynamicArray* dArray) {
+    assert(dArray);
+    free(dArray->array);
+    if (dArray->array != NULL) free(dArray);
+ }
+
+ void clear_Array(struct dynamicArray* dArray) {
+    assert(dArray != NULL);
+    dArray->size = 0;
+ }
+
+ size_t getSize_Array(const struct dynamicArray* dArray) {
+    assert(dArray != NULL);
+    return dArray->size;
+ }
+
+ void* getData_Array(const struct dynamicArray* dArray) {
+    assert(dArray != NULL);
+    return dArray->array;
+ }
+
+ static inline int isFull_Array(struct dynamicArray* dArray) {
+    return dArray->capacity == dArray->size;
+ }
+
+ void* at_Array(const struct dynamicArray* dArray, size_t index) {
+    assert (dArray != NULL && index < dArray->size);
+    return (uint8_t*)dArray->array + index * dArray->elementSize;
+ }
+
+ int push_Array(struct dynamicArray* dArray, const void* element) {
+    assert(dArray && element);
+
+    if (isFull_Array(dArray)) {
+        size_t newCap = dArray->capacity * 2;
+        void* newArray = realloc(dArray->array, newCap * dArray->elementSize);
+        if (newArray == NULL) {
+            perror("push_Array: realloc failed");
+            return -1;
+        }
+        dArray->array = newArray;
+        dArray->capacity *= 2;
+    }
+    memcpy((uint8_t*)dArray->array + dArray->size * dArray->elementSize, element, dArray->elementSize);
+    dArray->size++;
+    return 0;
+ }
+
+ void* pop_Array(struct dynamicArray* dArray) {
+    assert (dArray->size > 0);
+    dArray->size--;
+    return (uint8_t*)dArray->array + dArray->size * dArray->elementSize;
+ }
+
+ void swap_Array(struct dynamicArray* dArray, size_t x, size_t y) {
+    assert(dArray != NULL);
+    assert(x < dArray->size && y < dArray->size);
+    if (x == y) return;
+
+    void* tmp = Malloc(dArray->elementSize);
+
+    memcpy(tmp, at_Array(dArray, y), dArray->elementSize);
+    memcpy(at_Array(dArray, y), at_Array(dArray, x), dArray->elementSize);
+    memcpy(at_Array(dArray, x), tmp, dArray->elementSize);
+    free(tmp);
+ }
+ 
+
