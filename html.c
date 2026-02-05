@@ -4,7 +4,7 @@
 #include "game.h"
 
 //convert from board to HTML code
-char *convert(struct wordle_board *board, int status){
+char *convert(struct wordle_board *board, int status, char *word){
     static char buf[4096];
     char *ptr = buf;
     int remaining = sizeof(buf);
@@ -116,6 +116,7 @@ char *convert(struct wordle_board *board, int status){
         ptr += snprintf(ptr, remaining, "            </div>\n");
         remaining = sizeof(buf) - (ptr - buf);
     }
+    if(status < 2){
 ptr += snprintf(ptr, remaining, 
         "</div>\n"
         "       <div class=\"lookup-form\">\n"
@@ -125,7 +126,7 @@ ptr += snprintf(ptr, remaining,
         "       <input type=submit>\n"
         "       </form>\n"
         "       <p>\n"
-        "</div>\n");
+        "</div>\n");}
 remaining = sizeof(buf) - (ptr - buf);
     // If word is valid
     if(status == 1){
@@ -142,6 +143,40 @@ remaining = sizeof(buf) - (ptr - buf);
                 "      </div>"
                 "    </div>\n"
                 "</html>\n");
+    }
+    else if(status == 2){
+        ptr += snprintf(ptr, remaining,
+                "        <div class=\"message\" id=\"game-message\">"
+                "              YOU LOST! Word was %s"
+                "      </div>"
+                "    </div>\n"
+                "</html>\n", word);
+
+    for(int row = 0; row<6; row++){
+
+    for(int i = 0; i < 5; i++){
+        board->letters[row][i] = NULL;
+        board->colors[row][i] = NULL;
+
+    }
+    }
+    }
+    else if(status == 3){
+        ptr += snprintf(ptr, remaining,
+                "        <div class=\"message\" id=\"game-message\">"
+                "              YOU WON!"
+                "      </div>"
+                "    </div>\n"
+                "</html>\n");
+
+    for(int row = 0; row<6; row++){
+
+    for(int i = 0; i < 5; i++){
+        board->letters[row][i] = NULL;
+        board->colors[row][i] = NULL;
+
+    }
+    }
     }
     return buf;
 
