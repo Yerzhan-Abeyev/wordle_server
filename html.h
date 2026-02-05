@@ -3,7 +3,7 @@
 #define HTML_H
 struct wordle_board;
 
-char *convert(struct wordle_board *board, int number, char *word);
+char *convert(struct wordle_board *board, int number, char* code);
 
 #endif
 

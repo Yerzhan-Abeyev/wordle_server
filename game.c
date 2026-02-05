@@ -35,10 +35,8 @@ void cleanAll(){
 
 // Initialization process
 int start(){
-   
     allWords = fopen("allWords.txt", "rb");
     solWords = fopen("solutionWords.txt", "rb");
-
     if (allWords == NULL) {
         printf("ERROR: Could not open allWords.txt\n");
         cleanAll();
@@ -47,17 +45,9 @@ int start(){
     if (solWords == NULL) {
         printf("ERROR: Could not open solWords.txt\n");
         cleanAll();
-        return 0;}
+        return 0;
+    }
     memset(&board, 0, sizeof(board));
-
-    for(int row = 0; row<6; row++){
-
-    for(int i = 0; i < 5; i++){
-        board.letters[row][i] = NULL;
-        board.colors[row][i] = NULL;
-
-    }
-    }
     count = 0;    
     target = chooseTarget(solWords);
     if(target == NULL){
